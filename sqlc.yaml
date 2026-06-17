@@ -1,0 +1,12 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "internal/db/queries.sql"
+    schema:  "migrations/"
+    gen:
+      go:
+        package:       "queries"
+        out:           "internal/db/queries"
+        emit_json_tags: true
+        emit_db_tags:   true
+        emit_empty_slices: true

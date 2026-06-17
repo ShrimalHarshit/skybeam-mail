@@ -1,0 +1,39 @@
+# /etc/postfix/main.cf — SkyBeam Postfix configuration
+
+myhostname = mail.example.com          # CHANGE: your mail hostname
+mydomain   = example.com               # CHANGE: your domain
+myorigin   = $mydomain
+
+inet_interfaces  = all
+inet_protocols   = ipv4
+
+# ── Receiving ─────────────────────────────────────────────────
+mydestination    =
+virtual_mailbox_domains = example.com  # CHANGE
+virtual_transport       = lmtp:inet:dovecot:24
+
+# ── Relay / sending ───────────────────────────────────────────
+mynetworks       = 127.0.0.0/8 172.16.0.0/12 10.0.0.0/8
+relayhost        =
+
+# ── Anti-spam / filtering via Rspamd milter ──────────────────
+milter_protocol    = 6
+milter_default_action = accept
+smtpd_milters      = inet:rspamd:11332
+non_smtpd_milters  = inet:rspamd:11332
+
+# ── SASL (for port 587 submission) ───────────────────────────
+smtpd_sasl_auth_enable     = yes
+smtpd_sasl_security_options = noanonymous
+smtpd_sasl_local_domain    = $myhostname
+broken_sasl_auth_clients   = yes
+
+# ── TLS ───────────────────────────────────────────────────────
+smtpd_tls_cert_file = /etc/postfix/certs/fullchain.pem  # mount your certs
+smtpd_tls_key_file  = /etc/postfix/certs/privkey.pem
+smtpd_use_tls       = yes
+smtpd_tls_security_level = may
+
+# ── Limits ────────────────────────────────────────────────────
+message_size_limit = 52428800   # 50 MB
+mailbox_size_limit = 0          # unlimited (Dovecot enforces quota)

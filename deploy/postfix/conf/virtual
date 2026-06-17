@@ -1,0 +1,14 @@
+# /etc/postfix/virtual — virtual alias map
+# Maps envelope recipient addresses to local delivery targets.
+#
+# Format: recipient@domain  destination
+#
+# Generate hash: postmap /etc/postfix/virtual
+#
+# Add a line per user. Example:
+#   alice@example.com   alice@example.com
+#   bob@example.com     bob@example.com
+#   postmaster@example.com  alice@example.com
+#
+# ── Catch-all (comment out if not wanted) ─────────────────────
+# @example.com  postmaster@example.com

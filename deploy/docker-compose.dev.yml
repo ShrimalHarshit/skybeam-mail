@@ -1,0 +1,77 @@
+# SkyBeam Mail Platform — Development Override
+#
+
+services:
+
+  postgres:
+    # Expose Postgres for local psql / GUI tools / migrations
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: devpassword
+    # Relax: dev machine doesn't need WAL durability
+    command: >
+      postgres
+        -c fsync=off
+        -c synchronous_commit=off
+        -c full_page_writes=off
+        -c max_connections=50
+        -c log_min_duration_statement=0
+        -c log_statement=all
+
+  dovecot:
+    # Expose IMAP so you can connect with Thunderbird/mutt locally
+    ports:
+      - "143:143"
+      - "24:24"
+    networks:
+      skybeam-internal:
+        # Remove internal:true restriction in dev
+      skybeam-public: {}
+
+  rspamd:
+    # Expose Rspamd web UI
+    ports:
+      - "11334:11334"
+
+  postfix:
+    environment:
+      MAIL_DOMAIN: localhost
+      MAIL_HOSTNAME: localhost
+
+  api:
+    environment:
+      LOG_FORMAT: pretty
+      LOG_LEVEL: debug
+      API_SECRET: dev_secret_not_for_production_use_ever
+      DATABASE_URL: "postgres://skybeam:devpassword@postgres:5432/skybeam?sslmode=disable"
+      DOVECOT_MASTER_PASS: devpassword
+    deploy:
+      resources: {}    # no limits in dev
+
+  watcher:
+    environment:
+      LOG_FORMAT: pretty
+      LOG_LEVEL: debug
+      DATABASE_URL: "postgres://skybeam:devpassword@postgres:5432/skybeam?sslmode=disable"
+      DOVECOT_MASTER_PASS: devpassword
+    deploy:
+      resources: {}
+
+  reconciler:
+    environment:
+      LOG_FORMAT: pretty
+      LOG_LEVEL: debug
+      DATABASE_URL: "postgres://skybeam:devpassword@postgres:5432/skybeam?sslmode=disable"
+      DOVECOT_MASTER_PASS: devpassword
+      RECONCILER_LIGHT_INTERVAL: 30s    # run fast in dev
+      RECONCILER_FULL_INTERVAL: 2m
+    deploy:
+      resources: {}
+
+
+# Dev: loosen network isolation so all services can reach the internet
+# (e.g. ClamAV freshclam, apt updates during build)
+networks:
+  skybeam-internal:
+    internal: false    # override: allow outbound in dev

@@ -1,0 +1,11 @@
+# /etc/postfix/transport — transport map
+# Routes mail for domains to specific delivery transports.
+#
+# Format: domain  transport:nexthop
+#
+# Generate hash: postmap /etc/postfix/transport
+#
+# All local virtual domains go via LMTP to Dovecot.
+# Add your domain(s) below:
+#
+# example.com     lmtp:inet:dovecot:24

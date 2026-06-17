@@ -1,0 +1,8 @@
+.env
+*.exe
+deploy/.env
+postgres_data/
+mail_data/
+rspamd_data/
+clamav_data/
+postfix_queue/

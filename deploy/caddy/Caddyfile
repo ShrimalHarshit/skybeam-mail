@@ -1,0 +1,82 @@
+# SkyBeam Mail Platform — Caddyfile
+#
+# Caddy automatically handles:
+#   - Let's Encrypt certificate issuance
+#   - Certificate renewal
+#   - HTTP → HTTPS redirect
+#   - TLS 1.2 / 1.3 with safe cipher defaults
+#   - OCSP stapling
+#
+# All you need to do: point your DNS A records at this server's IP.
+#
+# Env vars injected at runtime via docker compose:
+#   API_HOSTNAME   e.g. api.skybeam.studio
+#   MAIL_HOSTNAME  e.g. mail.skybeam.studio  (for webmail / health endpoint)
+#   ACME_EMAIL     e.g. ops@skybeam.studio   (Let's Encrypt registration)
+
+# ── Global options ─────────────────────────────────────────────────────────
+{
+	# Email for Let's Encrypt account registration and expiry warnings.
+	email {$ACME_EMAIL}
+
+	# Grace period for certificate renewal retries.
+	# Default is 30s; increase for flaky ACME servers.
+	acme_ca_root /etc/caddy/ca.crt   # optional: pin your CA root
+
+	# Structured JSON access log so it integrates with the rest of the stack.
+	log {
+		format json
+		output stdout
+	}
+}
+
+# ── API endpoint ───────────────────────────────────────────────────────────
+# Receives Let's Encrypt challenge on :80, serves HTTPS on :443.
+# Proxies all requests to the internal Go API service.
+{$API_HOSTNAME} {
+	# Security headers — matches the old Nginx config exactly.
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Content-Type-Options    "nosniff"
+		X-Frame-Options           "DENY"
+		Referrer-Policy           "strict-origin-when-cross-origin"
+		# Remove server fingerprinting
+		-Server
+	}
+
+	# Increase body size limit for email attachments (50 MB + headroom).
+	request_body {
+		max_size 55MB
+	}
+
+	# Reverse proxy to Go API.
+	# Caddy automatically sets X-Forwarded-For, X-Forwarded-Proto, etc.
+	reverse_proxy api:8080 {
+		# Health-checked upstream — Caddy won't send traffic to an unhealthy API.
+		health_uri  /health
+		health_interval 15s
+		health_timeout  5s
+
+		# Pass real client IP.
+		header_up X-Real-IP {remote_host}
+
+		# Timeout configuration.
+		transport http {
+			read_timeout   60s
+			write_timeout  30s
+		}
+	}
+
+	# Structured request logging.
+	log {
+		format json
+		output stdout
+	}
+}
+
+# ── Mail hostname (webmail health / status page) ───────────────────────────
+# Serves a simple health redirect — useful for smoke-testing DNS/TLS from
+# a browser without needing to know the API hostname.
+{$MAIL_HOSTNAME} {
+	redir https://{$API_HOSTNAME}{uri} 301
+}

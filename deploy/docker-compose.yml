@@ -1,0 +1,417 @@
+# SkyBeam Mail Platform — Production Docker Compose
+#
+# Networks:
+#   skybeam-internal  private, no external routing (Dovecot, Postgres, Go services)
+#   skybeam-public    edge network: only Postfix (SMTP) and Caddy (HTTPS) are on it
+#
+# TLS:
+#   Caddy handles Let's Encrypt automatically.
+#   Set ACME_EMAIL, API_HOSTNAME, MAIL_HOSTNAME in .env — no cert files needed.
+#
+# Usage:
+#   cp .env.example .env && nano .env
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# Volumes:
+#   postgres_data   PostgreSQL data files
+#   mail_data       Dovecot Maildir tree
+#   rspamd_data     Rspamd bayes + history
+#   clamav_data     ClamAV virus definitions
+#   postfix_queue   Postfix mail queue (survives restarts)
+#   dkim_keys       DKIM private keys (shared Postfix ↔ Rspamd)
+#   caddy_data      Caddy TLS certificates + ACME state (persist across restarts)
+#   caddy_config    Caddy runtime config
+
+# ─────────────────────────────────────────────────────────────
+# EXTENSION FIELDS — shared config blocks via YAML anchors
+# ─────────────────────────────────────────────────────────────
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+    tag: "{{.Name}}"
+
+x-restart: &always
+  restart: always
+
+x-security: &security
+  security_opt:
+    - no-new-privileges:true
+
+x-go-service-env: &go-common-env
+  DATABASE_URL: "postgres://skybeam:${POSTGRES_PASSWORD}@postgres:5432/skybeam?sslmode=disable"
+  DOVECOT_HOST: dovecot
+  DOVECOT_PORT: "143"
+  DOVECOT_MASTER_USER: ${DOVECOT_MASTER_USER}
+  DOVECOT_MASTER_PASS: ${DOVECOT_MASTER_PASS}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+
+# ─────────────────────────────────────────────────────────────
+# SERVICES
+# ─────────────────────────────────────────────────────────────
+
+services:
+
+  # ══════════════════════════════════════════════════════════
+  # STORAGE
+  # ══════════════════════════════════════════════════════════
+
+  postgres:
+    image: postgres:16-alpine
+    <<: [*always, *security]
+    logging: *default-logging
+    networks:
+      - skybeam-internal
+    environment:
+      POSTGRES_DB: skybeam
+      POSTGRES_USER: skybeam
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Tune for mail workload: mostly writes (events), moderate reads
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro   # auto-run on first boot
+    command: >
+      postgres
+        -c max_connections=100
+        -c shared_buffers=256MB
+        -c effective_cache_size=1GB
+        -c maintenance_work_mem=64MB
+        -c checkpoint_completion_target=0.9
+        -c wal_buffers=16MB
+        -c default_statistics_target=100
+        -c random_page_cost=1.1
+        -c log_min_duration_statement=1000
+        -c log_timezone=UTC
+        -c timezone=UTC
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skybeam -d skybeam"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ══════════════════════════════════════════════════════════
+  # MAIL INFRASTRUCTURE
+  # ══════════════════════════════════════════════════════════
+
+  dovecot:
+    build:
+      context: ./dovecot
+      dockerfile: Dockerfile
+    <<: [*always, *security]
+    logging: *default-logging
+    networks:
+      - skybeam-internal
+    hostname: dovecot
+    volumes:
+      - mail_data:/var/mail/vhosts
+      - ./dovecot/conf:/etc/dovecot:ro   # includes users and master-users
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Check that IMAP port is accepting connections
+      test: ["CMD-SHELL", "nc -z localhost 143 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    # Dovecot needs to be able to set resource limits; cap_add is minimal
+    cap_add:
+      - SYS_CHROOT       # needed for chroot isolation of IMAP processes
+
+  rspamd:
+    image: rspamd/rspamd:latest
+    <<: [*always, *security]
+    logging: *default-logging
+    networks:
+      - skybeam-internal
+    hostname: rspamd
+    volumes:
+      - ./rspamd/local.d:/etc/rspamd/local.d:ro
+      - ./rspamd/override.d:/etc/rspamd/override.d:ro
+      - dkim_keys:/var/lib/rspamd/dkim:ro    # DKIM private keys
+      - rspamd_data:/var/lib/rspamd
+    healthcheck:
+      test: ["CMD", "rspamd", "--test-config"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  clamav:
+    image: clamav/clamav:stable
+    <<: [*always, *security]
+    logging: *default-logging
+    networks:
+      - skybeam-internal
+    hostname: clamav
+    volumes:
+      - clamav_data:/var/lib/clamav
+    environment:
+      # freshclam runs as a sidecar inside this container
+      CLAMAV_NO_FRESHCLAMD: "false"
+      CLAMAV_NO_CLAMD: "false"
+    healthcheck:
+      # clamdscan -V exits 0 when clamd is running and DB is loaded
+      test: ["CMD", "clamdscan", "--ping", "3"]
+      interval: 60s
+      timeout: 30s
+      retries: 5
+      start_period: 120s    # initial DB load takes time
+
+  postfix:
+    build:
+      context: ./postfix
+      dockerfile: Dockerfile
+    <<: [*always, *security]
+    logging: *default-logging
+    networks:
+      - skybeam-internal
+      - skybeam-public       # must face internet to receive on :25
+    hostname: ${MAIL_HOSTNAME:-mail.example.com}
+    ports:
+      - "25:25"             # SMTP inbound (internet → Postfix)
+      - "587:587"           # Submission (clients → Postfix, SASL auth)
+    volumes:
+      - ./postfix/conf:/etc/postfix/conf.d:ro
+      - ./postfix/conf/main.cf:/etc/postfix/main.cf:ro
+      - ./postfix/conf/master.cf:/etc/postfix/master.cf:ro
+      - ./postfix/conf/virtual:/etc/postfix/virtual:ro
+      - ./postfix/conf/transport:/etc/postfix/transport:ro
+      - postfix_queue:/var/spool/postfix   # queue persists across restarts
+      - dkim_keys:/etc/postfix/dkim:ro
+    environment:
+      MAIL_DOMAIN: ${MAIL_DOMAIN:-example.com}
+      MAIL_HOSTNAME: ${MAIL_HOSTNAME:-mail.example.com}
+    depends_on:
+      rspamd:
+        condition: service_healthy
+      dovecot:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "postfix status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    # Postfix needs NET_BIND_SERVICE to bind :25 as non-root
+    cap_add:
+      - NET_BIND_SERVICE
+
+  # ══════════════════════════════════════════════════════════
+  # GO APPLICATION SERVICES
+  # ══════════════════════════════════════════════════════════
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: api
+    <<: [*always, *security]
+    logging: *default-logging
+    networks:
+      - skybeam-internal
+    environment:
+      <<: *go-common-env
+      API_ADDR: ":8080"
+      API_SECRET: ${API_SECRET}
+      POSTFIX_HOST: postfix
+      POSTFIX_PORT: "587"
+      SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-30}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dovecot:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "1.0"
+        reservations:
+          memory: 64M
+
+  watcher:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: watcher
+    <<: [*always, *security]
+    logging: *default-logging
+    networks:
+      - skybeam-internal
+    environment:
+      <<: *go-common-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dovecot:
+        condition: service_healthy
+    healthcheck:
+      # Watcher doesn't expose HTTP; check the process is alive
+      test: ["CMD-SHELL", "pgrep -x watcher || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"
+
+  reconciler:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: reconciler
+    <<: [*always, *security]
+    logging: *default-logging
+    networks:
+      - skybeam-internal
+    environment:
+      <<: *go-common-env
+      RECONCILER_LIGHT_INTERVAL: ${RECONCILER_LIGHT_INTERVAL:-5m}
+      RECONCILER_FULL_INTERVAL:  ${RECONCILER_FULL_INTERVAL:-24h}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dovecot:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x reconciler || exit 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+
+  # ══════════════════════════════════════════════════════════
+  # EDGE / AUTOMATIC TLS (Caddy)
+  # ══════════════════════════════════════════════════════════
+
+  caddy:
+    image: caddy:2-alpine
+    <<: [*always, *security]
+    logging: *default-logging
+    networks:
+      - skybeam-internal
+      - skybeam-public
+    ports:
+      - "80:80"              # ACME HTTP-01 challenge + HTTP→HTTPS redirect
+      - "443:443"            # HTTPS
+      - "443:443/udp"        # HTTP/3 (QUIC)
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data             # persists issued certificates across restarts
+      - caddy_config:/config         # persists Caddy runtime config
+    environment:
+      # These three vars are all Caddy needs — no cert files, no Certbot.
+      ACME_EMAIL:   ${ACME_EMAIL}
+      API_HOSTNAME: ${API_HOSTNAME}
+      MAIL_HOSTNAME: ${MAIL_HOSTNAME}
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      # caddy validate checks config; wget confirms the process is serving
+      test: ["CMD", "wget", "-qO-", "http://localhost:2019/config/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+
+# ─────────────────────────────────────────────────────────────
+# NETWORKS
+# ─────────────────────────────────────────────────────────────
+
+networks:
+  skybeam-internal:
+    # All inter-service communication.
+    # Nothing here is exposed to the host network directly.
+    driver: bridge
+    internal: true     # no outbound internet access from this network
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+  skybeam-public:
+    # Only services that MUST face the internet join this network:
+    # Postfix (:25, :587) and Caddy (:80, :443)
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/24
+
+# ─────────────────────────────────────────────────────────────
+# VOLUMES
+# ─────────────────────────────────────────────────────────────
+
+volumes:
+  postgres_data:
+    driver: local
+    labels:
+      com.skybeam.backup: "daily"
+      com.skybeam.description: "PostgreSQL data — events, materialized views"
+
+  mail_data:
+    driver: local
+    labels:
+      com.skybeam.backup: "hourly"
+      com.skybeam.description: "Dovecot Maildir tree — source of truth for all mail"
+
+  rspamd_data:
+    driver: local
+    labels:
+      com.skybeam.backup: "weekly"
+      com.skybeam.description: "Rspamd Bayesian filter training data"
+
+  clamav_data:
+    driver: local
+    labels:
+      com.skybeam.backup: "none"
+      com.skybeam.description: "ClamAV virus definitions — refetched automatically"
+
+  postfix_queue:
+    driver: local
+    labels:
+      com.skybeam.backup: "daily"
+      com.skybeam.description: "Postfix mail queue — must persist across restarts"
+
+  dkim_keys:
+    driver: local
+    labels:
+      com.skybeam.backup: "daily"
+      com.skybeam.description: "DKIM private keys — shared by Postfix and Rspamd"
+
+  caddy_data:
+    driver: local
+    labels:
+      com.skybeam.backup: "daily"
+      com.skybeam.description: "Caddy TLS certificates and ACME account state"
+
+  caddy_config:
+    driver: local
+    labels:
+      com.skybeam.backup: "none"
+      com.skybeam.description: "Caddy runtime configuration cache"
