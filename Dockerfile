@@ -22,6 +22,7 @@ RUN apk add --no-cache ca-certificates tzdata
 COPY --from=builder /bin/api /usr/local/bin/api
 COPY --from=builder /go/bin/goose /usr/local/bin/goose
 COPY migrations /migrations
+COPY ui /ui
 EXPOSE 8080
 ENTRYPOINT ["api"]
 

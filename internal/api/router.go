@@ -3,6 +3,7 @@ package api
 
 import (
 	"net/http"
+	"os"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -99,6 +100,14 @@ func NewRouter(cfg *config.Config, pool *pgxpool.Pool) http.Handler {
 			r.Post("/admin/accounts", adminHandler.CreateAccount)
 		})
 	})
+
+	// ── Static Frontend ───────────────────────────────────────
+	// Try /ui (Docker) or ./ui (local dev)
+	uiPath := "./ui"
+	if _, err := os.Stat("/ui"); err == nil {
+		uiPath = "/ui"
+	}
+	r.Handle("/*", http.FileServer(http.Dir(uiPath)))
 
 	return r
 }
