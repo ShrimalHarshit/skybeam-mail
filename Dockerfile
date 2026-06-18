@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/api        ./cmd/
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/watcher    ./cmd/watcher
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/reconciler ./cmd/reconciler
 
-RUN go install github.com/pressly/goose/v3/cmd/goose@latest
+RUN go install github.com/pressly/goose/v3/cmd/goose@v3.24.1
 
 # ─── Stage 2: api ─────────────────────────────────────────────
 FROM alpine:3.20 AS api
