@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dovecot-imapd \
     dovecot-lmtpd \
     dovecot-pgsql \
+    netcat-openbsd \
     procps \
     && rm -rf /var/lib/apt/lists/*
 

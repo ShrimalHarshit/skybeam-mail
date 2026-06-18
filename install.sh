@@ -37,6 +37,7 @@ DOVECOT_MASTER_PASS=$(openssl rand -base64 32)
 
 # 4. Write .env
 echo "Creating .env file..."
+DATABASE_URL="postgres://skybeam:${POSTGRES_PASSWORD}@postgres:5432/skybeam?sslmode=disable"
 cat > .env <<EOF
 # SkyBeam Mail Platform — Environment Variables
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -53,7 +54,7 @@ RECONCILER_FULL_INTERVAL=24h
 LOG_LEVEL=info
 LOG_FORMAT=json
 ACME_EMAIL=${ACME_EMAIL}
-DATABASE_URL=postgres://skybeam:${POSTGRES_PASSWORD}@postgres:5432/skybeam?sslmode=disable
+DATABASE_URL=${DATABASE_URL}
 DOVECOT_HOST=dovecot
 EOF
 
@@ -83,6 +84,9 @@ if [ $attempt -gt 30 ]; then
 fi
 
 # 7. Create Admin Account
+echo "Running database migrations..."
+docker compose -f deploy/docker-compose.yml exec -T api goose -dir /migrations postgres "${DATABASE_URL}" up
+
 echo "Creating Admin account..."
 docker compose -f deploy/docker-compose.yml exec -T api api -setup-admin "${ADMIN_EMAIL}" -password "${ADMIN_PASS}"
 

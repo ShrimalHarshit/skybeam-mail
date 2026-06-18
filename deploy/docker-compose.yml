@@ -137,7 +137,7 @@ services:
       - dkim_keys:/var/lib/rspamd/dkim:ro    # DKIM private keys
       - rspamd_data:/var/lib/rspamd
     healthcheck:
-      test: ["CMD", "rspamd", "--test-config"]
+      test: ["CMD", "rspamadm", "configtest"]
       interval: 30s
       timeout: 10s
       retries: 5
