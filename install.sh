@@ -63,13 +63,13 @@ echo "skybeam_internal:{PLAIN}${DOVECOT_MASTER_PASS}" > deploy/dovecot/conf/mast
 
 # 5. Start Docker Stack
 echo "Starting Docker Compose stack..."
-docker compose -f deploy/docker-compose.yml up -d --build
+docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 
 # 6. Wait for Database & API
 echo "Waiting for services to become healthy (this may take a minute)..."
 attempt=0
 while [ $attempt -le 30 ]; do
-    if docker compose -f deploy/docker-compose.yml exec -T api wget -qO- http://localhost:8080/health > /dev/null 2>&1; then
+    if docker compose --env-file .env -f deploy/docker-compose.yml exec -T api wget -qO- http://localhost:8080/health > /dev/null 2>&1; then
         echo "API is up!"
         break
     fi
@@ -85,10 +85,10 @@ fi
 
 # 7. Create Admin Account
 echo "Running database migrations..."
-docker compose -f deploy/docker-compose.yml exec -T api goose -dir /migrations postgres "${DATABASE_URL}" up
+docker compose --env-file .env -f deploy/docker-compose.yml exec -T api goose -dir /migrations postgres "${DATABASE_URL}" up
 
 echo "Creating Admin account..."
-docker compose -f deploy/docker-compose.yml exec -T api api -setup-admin "${ADMIN_EMAIL}" -password "${ADMIN_PASS}"
+docker compose --env-file .env -f deploy/docker-compose.yml exec -T api api -setup-admin "${ADMIN_EMAIL}" -password "${ADMIN_PASS}"
 
 # 8. Success Output
 echo "========================================================"
@@ -105,5 +105,5 @@ echo "1. Ensure DNS A records for ${API_HOSTNAME} and ${MAIL_HOSTNAME} point to 
 echo "2. Ensure MX record for ${MAIL_DOMAIN} points to ${MAIL_HOSTNAME}."
 echo "3. Log in to the web interface to configure domains and mailboxes."
 echo ""
-echo "To view logs: docker compose -f deploy/docker-compose.yml logs -f"
+echo "To view logs: docker compose --env-file .env -f deploy/docker-compose.yml logs -f"
 echo "========================================================"
